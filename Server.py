@@ -9,8 +9,8 @@ server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server.bind((HOST, PORT))
 server.listen()
 
-clients = {}  # key: conn, value: {"username": str, "room": str or None}
-rooms = {}    # key: room_name, value: list of conns
+clients = {}  # {conn: {"username": str, "room": str or None}}
+rooms = {}    # {room_name: [conn, ...]}
 
 print(f"[SERVER RUNNING] Listening on {HOST}:{PORT}")
 
@@ -23,65 +23,77 @@ def broadcast(message, room, sender_conn=None):
                 conn.close()
 
 def send_menu(conn):
-    conn.send("Pilih menu:\n1. Create room\n2. Join room\nMasukkan pilihan: ".encode('utf-8'))
+    # Kirim menu dengan tanda khusus supaya client bisa deteksi ini menu
+    menu_msg = (
+        "\n=== MENU UTAMA ===\n"
+        "Pilih menu:\n"
+        "1. Create room\n"
+        "2. Join room\n"
+        "3. Exit\n"
+        "Masukkan pilihan: "
+    )
+    conn.send(menu_msg.encode('utf-8'))
 
 def join_room(conn, username):
     while True:
         if rooms:
             room_list = "\n".join(f"- {r}" for r in rooms)
-            conn.send(f"Room yang tersedia:\n{room_list}\n\n".encode('utf-8'))
+            conn.send(f"\nRoom yang tersedia:\n{room_list}\n\n".encode('utf-8'))
         else:
-            conn.send("Belum ada room yang tersedia. Silakan buat room terlebih dahulu.\n".encode('utf-8'))
-            return False  # Kembali ke menu utama karena tidak ada room
+            conn.send("\nBelum ada room yang tersedia. Silakan buat room terlebih dahulu.\n".encode('utf-8'))
+            return False
 
-        conn.send("Masukkan nama room yang ingin dimasuki (atau ketik 'back' untuk kembali ke menu utama):\n".encode('utf-8'))
+        conn.send("Masukkan nama room yang ingin dimasuki (atau ketik 'menu' untuk kembali ke menu utama):\n".encode('utf-8'))
         room_name = conn.recv(1024).decode('utf-8').strip()
+
         if not room_name:
             conn.send("Nama room tidak boleh kosong.\n\n".encode('utf-8'))
             continue
-        if room_name.lower() == 'back':
-            return False  # Kembali ke menu utama
+
+        if room_name.lower() == 'menu':
+            return False
 
         if room_name not in rooms:
             conn.send(f"Room {room_name} tidak tersedia!\n\n".encode('utf-8'))
             continue
 
+        # Tambahkan client ke room
         rooms[room_name].append(conn)
         clients[conn]["room"] = room_name
-        conn.send(f"{username} bergabung ke dalam room {room_name}\n".encode('utf-8'))
 
-        # Kirim daftar user lain di room (kecuali dirinya)
+        # Kirim konfirmasi bergabung dan tanda khusus buat client
+        conn.send(f"\n=== Anda telah tergabung di room {room_name} ===\n".encode('utf-8'))
+
         other_users = [clients[c]["username"] for c in rooms[room_name] if c != conn]
         if other_users:
             conn.send(f"Pengguna lain di room ini: {', '.join(other_users)}\n".encode('utf-8'))
         else:
             conn.send("Anda adalah pengguna pertama di room ini.\n".encode('utf-8'))
 
-        # Broadcast notif user baru join (kecuali ke diri sendiri)
-        broadcast(f"[{username} telah bergabung ke room]", room_name, sender_conn=conn)
-
-        return True  # Berhasil masuk room
+        broadcast(f"[{username} telah bergabung ke room {room_name}]", room_name, sender_conn=conn)
+        return True
 
 def handle_client(conn, addr):
     print(f"[NEW CONNECTION] {addr}")
     conn.send("Username: ".encode('utf-8'))
+
     try:
         username = conn.recv(1024).decode('utf-8').strip()
     except:
         conn.close()
         return
-    clients[conn] = {"username": username, "room": None}
-    conn.send(f"Selamat Datang, {username}!\n".encode('utf-8'))
 
-    while True:  # MENU UTAMA LOOP
+    clients[conn] = {"username": username, "room": None}
+    conn.send(f"\nSelamat Datang, {username}!\n".encode('utf-8'))
+
+    while True:
         try:
             send_menu(conn)
             pilihan = conn.recv(1024).decode('utf-8').strip().lower()
             if not pilihan:
                 break
 
-            # CREATE ROOM
-            if pilihan == '1' or pilihan == 'create':
+            if pilihan in ['1', 'create']:
                 conn.send("Masukkan nama room yang ingin dibuat: ".encode('utf-8'))
                 room_name = conn.recv(1024).decode('utf-8').strip()
                 if not room_name:
@@ -92,80 +104,85 @@ def handle_client(conn, addr):
                     continue
 
                 rooms[room_name] = []
-                conn.send(f"Room {room_name} berhasil dibuat.\n".encode('utf-8'))
 
+                conn.send(f"\nRoom {room_name} berhasil dibuat.\n".encode('utf-8'))
+
+                # Tampilkan pilihan setelah buat room
                 while True:
-                    conn.send("Ketik \n'join' untuk masuk ke room\n'back' untuk pindah room chat\n'menu' untuk kembali ke menu utama.\n".encode('utf-8'))
-                    conn.send("Masukkan Pilihan : ".encode('utf-8'))
+                    conn.send(
+                        "Ketik \n'join' untuk masuk ke room\n"
+                        "'back' untuk pindah room chat\n"
+                        "'menu' untuk kembali ke menu utama.\n"
+                        "Masukkan Pilihan : ".encode('utf-8')
+                    )
                     pilihan_lanjut = conn.recv(1024).decode('utf-8').strip().lower()
+
                     if pilihan_lanjut == 'join':
                         rooms[room_name].append(conn)
                         clients[conn]["room"] = room_name
-                        conn.send(f"Anda telah tergabung di room {room_name}.\n".encode('utf-8'))
+                        conn.send(f"\n=== Anda telah tergabung di room {room_name} ===\n".encode('utf-8'))
 
-                        # Kirim daftar user lain di room (kecuali dirinya)
                         other_users = [clients[c]["username"] for c in rooms[room_name] if c != conn]
                         if other_users:
                             conn.send(f"Pengguna lain di room ini: {', '.join(other_users)}\n".encode('utf-8'))
                         else:
                             conn.send("Anda adalah pengguna pertama di room ini.\n".encode('utf-8'))
 
-                        broadcast(f"[{username} telah bergabung ke room]", room_name, sender_conn=conn)
+                        broadcast(f"[{username} telah bergabung ke room {room_name}]", room_name, sender_conn=conn)
                         break
-                    elif pilihan_lanjut == 'menu' or pilihan_lanjut == 'back':
+
+                    elif pilihan_lanjut == 'back':
+                        join_room(conn, username)
+                        break
+
+                    elif pilihan_lanjut == 'menu':
                         break
                     else:
                         conn.send("Pilihan tidak valid. Ketik 'join', 'back', atau 'menu'.\n".encode('utf-8'))
 
                 if clients[conn]["room"] is None:
-                    continue  # Kembali ke menu utama
+                    continue
 
-            # JOIN ROOM
-            elif pilihan == '2' or pilihan == 'join':
+            elif pilihan in ['2', 'join']:
                 success = join_room(conn, username)
                 if not success:
-                    continue  # kembali ke menu utama jika tidak berhasil masuk room
+                    continue
+
+            elif pilihan in ['3', 'exit']:
+                conn.send("Terima kasih telah menggunakan aplikasi chat. Sampai jumpa!\n".encode('utf-8'))
+                break
 
             else:
-                conn.send("Pilihan tidak valid, masukkan 1 atau 2.\n".encode('utf-8'))
+                conn.send("Pilihan tidak valid, masukkan 1, 2, atau 3.\n".encode('utf-8'))
                 continue
 
-            # CHAT LOOP setelah masuk room
+            # Setelah join room, mulai loop chat
             while True:
                 msg = conn.recv(1024).decode('utf-8').strip()
                 if not msg:
                     break
 
                 if msg.lower() == "exit":
-                    return  # keluar koneksi
+                    return
 
                 if msg.lower() == "back":
-                    # Keluar dari room, hapus dari list
                     room = clients[conn]["room"]
                     if room and conn in rooms.get(room, []):
                         rooms[room].remove(conn)
-                        broadcast(f"[{username} telah meninggalkan room]", room, sender_conn=conn)
-                        if len(rooms[room]) == 0:
-                            del rooms[room]
+                        broadcast(f"[{username} telah meninggalkan room {room}]", room, sender_conn=conn)
                     clients[conn]["room"] = None
-
-                    # langsung masuk ke menu join room (pilihan 2)
                     success = join_room(conn, username)
                     if not success:
-                        break  # jika gagal join room (misal ketik back), kembali ke menu utama
-
-                    continue  # kembali ke chat loop setelah berhasil join room
+                        break
+                    continue
 
                 if msg.lower() == "menu":
-                    # Keluar dari room, hapus dari list
                     room = clients[conn]["room"]
                     if room and conn in rooms.get(room, []):
                         rooms[room].remove(conn)
-                        broadcast(f"[{username} telah meninggalkan room]", room, sender_conn=conn)
-                        if len(rooms[room]) == 0:
-                            del rooms[room]
+                        broadcast(f"[{username} telah meninggalkan room {room}]", room, sender_conn=conn)
                     clients[conn]["room"] = None
-                    break  # kembali ke menu utama
+                    break
 
                 room = clients[conn]["room"]
                 if room:
@@ -178,25 +195,15 @@ def handle_client(conn, addr):
             print(f"[ERROR MENU] {e}")
             break
 
-    # Cleanup saat keluar permanen
     room = clients[conn]["room"]
     if room and conn in rooms.get(room, []):
         rooms[room].remove(conn)
-        broadcast(f"[{username} telah meninggalkan room]", room, sender_conn=conn)
-        if len(rooms[room]) == 0:
-            del rooms[room]
+        broadcast(f"[{username} telah meninggalkan room {room}]", room, sender_conn=conn)
 
     del clients[conn]
     conn.close()
     print(f"[DISCONNECTED] {addr}")
 
-
 while True:
     conn, addr = server.accept()
-    thread = threading.Thread(target=handle_client, args=(conn, addr))
-    thread.start()
-
-
-#coba push github
-#testetstetst
-#octafanteng maksmal
+    threading.Thread(target=handle_client, args=(conn, addr)).start()
